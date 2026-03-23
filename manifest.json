@@ -1,10 +1,10 @@
 {
-  "id": "claudian",
+  "id": "codian",
   "name": "Codian",
   "version": "1.3.70",
   "minAppVersion": "1.4.5",
   "description": "Embeds Claude Code or OpenAI Codex as an AI collaborator in your vault. Your vault becomes the agent's working directory, with file read/write, search, bash commands, and multi-step workflows.",
-  "author": "Yishen Tu, 张晓秋",
-  "authorUrl": "https://github.com/YishenTu",
+  "author": "张晓秋",
+  "authorUrl": "https://github.com/zhangjiangzhihui",
   "isDesktopOnly": true
 }

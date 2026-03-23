@@ -1,44 +1,42 @@
 # Codian
 
-![GitHub stars](https://img.shields.io/github/stars/YishenTu/claudian?style=social)
-![GitHub release](https://img.shields.io/github/v/release/YishenTu/claudian)
-![License](https://img.shields.io/github/license/YishenTu/claudian)
+[中文说明](./README.zh-CN.md)
 
-![Preview](Preview.png)
+![GitHub stars](https://img.shields.io/github/stars/zhangjiangzhihui/codian?style=social)
+![GitHub release](https://img.shields.io/github/v/release/zhangjiangzhihui/codian)
+![License](https://img.shields.io/github/license/zhangjiangzhihui/codian)
 
-Codian is an Obsidian plugin that embeds a terminal-style coding agent in your vault. Users can choose between `Claude Code` and `OpenAI Codex`, and the vault becomes the agent's working directory for chat, editing, search, bash commands, and multi-step workflows.
+Codian is an Obsidian plugin that embeds a terminal-style AI agent inside your vault. It supports both `Claude Code` and `OpenAI Codex`, reusing the same chat UI, editing workflow, session model, and vault-aware context system.
 
 ## Features
 
-- Choose the active provider in settings: `Claude Code` or `OpenAI Codex`
-- Reuse the same chat UI, tabs, sessions, inline edit, attachments, and external context folders across providers
-- Read, write, edit, and search files directly inside the vault
-- Drag and drop or paste images into conversations
-- Use `/commands`, `@file`, MCP servers, custom agents, and `.claude/skills`
-- Run inline edit with diff preview from the editor
-- Switch between `YOLO`, `Safe`, and `Plan`
-- Keep Claude-only features such as Claude Code Plugins and Chrome integration when Claude is selected
+- Switch between `Claude Code` and `OpenAI Codex` in settings
+- Chat, edit files, search the vault, run bash commands, and execute multi-step workflows
+- Reuse tabs, sessions, attachments, inline edit, and external context folders across providers
+- Use `@file`, slash commands, MCP servers, custom agents, and `.claude/skills`
+- Paste or drag images into conversations
+- Choose between `YOLO`, `Safe`, and `Plan` modes
 
 ## Requirements
 
 - Obsidian `v1.8.9+`
-- Desktop only: macOS, Linux, Windows
+- Desktop only: Windows, macOS, or Linux
 - One configured provider:
-  - Claude mode: Claude Code CLI plus Anthropic-compatible credentials
-  - Codex mode: `OPENAI_API_KEY` or `CODEX_API_KEY` and optional `OPENAI_BASE_URL`
+  - `Claude Code`: Claude Code CLI and compatible credentials
+  - `OpenAI Codex`: `OPENAI_API_KEY` or `CODEX_API_KEY`, with optional `OPENAI_BASE_URL`
 
 ## Installation
 
 ### Release
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/YishenTu/claudian/releases/latest)
-2. Put them in `YOUR_VAULT/.obsidian/plugins/claudian/`
-3. Enable `Codian` in Obsidian community plugins
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/zhangjiangzhihui/codian/releases/latest)
+2. Put them in `YOUR_VAULT/.obsidian/plugins/codian/`
+3. Enable `Codian` in Community Plugins
 
 ### BRAT
 
 1. Install `BRAT`
-2. Add `https://github.com/YishenTu/claudian`
+2. Add `https://github.com/zhangjiangzhihui/codian`
 3. Enable `Codian`
 
 ### Development
@@ -48,7 +46,7 @@ npm install
 npm run build
 ```
 
-Watch mode:
+For watch mode:
 
 ```bash
 npm run dev
@@ -59,7 +57,7 @@ npm run dev
 ### Claude Code
 
 - Install [Claude Code CLI](https://code.claude.com/docs/en/overview)
-- Configure Anthropic-compatible credentials in settings or environment variables
+- Configure credentials in settings or environment variables
 - Optional: set a custom Claude CLI path in Settings -> Advanced
 
 ### OpenAI Codex
@@ -70,12 +68,10 @@ npm run dev
 
 ## Usage
 
-Open the chat from the ribbon or command palette, or trigger inline edit from the editor. The provider is selected in plugin settings and the rest of the workflow stays the same.
+Open Codian from the ribbon, command palette, or editor inline-edit flow. The active provider is selected in plugin settings.
 
-Context features:
-
-- Focused note is attached automatically
-- `@` mentions vault files, agents, MCP servers, and external folders
+- The focused note is attached automatically
+- `@` can reference vault files, agents, MCP servers, and external folders
 - Selected editor text is included automatically
 - Images can be pasted, dragged in, or referenced by path
 
@@ -83,28 +79,12 @@ Context features:
 
 - `YOLO`: full execution
 - `Safe`: Claude uses its approval flow; Codex runs in strict read-only mode
-- `Plan`: Claude uses its planning workflow; Codex returns a plan only and waits for you to switch modes before implementation
+- `Plan`: Claude uses planning mode; Codex returns a plan and waits for execution in another mode
 
-## Provider-Specific Features
+## Provider-Specific Notes
 
 - Claude-only: Claude Code Plugins, `claude-in-chrome`, loading `~/.claude/settings.json`
 - Shared: chat, sessions, inline edit, title generation, MCP, slash commands, custom agents, external context folders
-
-## Troubleshooting
-
-### CLI not found
-
-If the plugin cannot find the selected provider CLI:
-
-- Claude: set the Claude CLI path in Settings -> Advanced
-- Codex: set the Codex CLI path in Settings -> Advanced
-
-On Windows, prefer real executables or `cli.js` paths over `.cmd` wrappers.
-
-### Missing credentials
-
-- Claude mode uses Anthropic-compatible environment variables
-- Codex mode uses `OPENAI_API_KEY` or `CODEX_API_KEY`
 
 ## Architecture
 
@@ -115,7 +95,7 @@ src/
     agents/      custom agent management
     mcp/         MCP config and runtime
     plugins/     Claude Code plugin integration
-    prompts/     system prompts
+    prompts/     provider prompts
     storage/     settings and session persistence
   features/
     chat/        main chat UI
@@ -123,18 +103,7 @@ src/
     settings/    settings UI
 ```
 
-## Roadmap
-
-- [x] Claude Code integration
-- [x] OpenAI Codex integration
-- [x] Custom agents
-- [x] MCP support
-- [x] Inline edit
-- [x] Plan mode
-- [ ] More provider-specific polish
-- [ ] Additional advanced tooling
-
 ## Credits
 
-- [Anthropic](https://anthropic.com) for Claude and the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/overview)
-- [OpenAI](https://openai.com) for Codex and the [Codex docs](https://platform.openai.com/docs/codex)
+- [Anthropic](https://anthropic.com) for Claude and the Claude Agent SDK
+- [OpenAI](https://openai.com) for Codex and the Codex platform/docs
