@@ -1,0 +1,229 @@
+import type { Options } from '@anthropic-ai/claude-agent-sdk';
+import { query as agentQuery } from '@anthropic-ai/claude-agent-sdk';
+import { Codex } from '../../../core/codex';
+
+import { buildRefineSystemPrompt } from '../../../core/prompts/instructionRefine';
+import { type InstructionRefineResult, isAdaptiveThinkingModel, THINKING_BUDGETS } from '../../../core/types';
+import type ClaudianPlugin from '../../../main';
+import { getEnhancedPath, getMissingNodeError, parseEnvironmentVariables } from '../../../utils/env';
+import { getVaultPath } from '../../../utils/path';
+
+export type RefineProgressCallback = (update: InstructionRefineResult) => void;
+
+export class InstructionRefineService {
+  private plugin: ClaudianPlugin;
+  private abortController: AbortController | null = null;
+  private sessionId: string | null = null;
+  private existingInstructions: string = '';
+
+  constructor(plugin: ClaudianPlugin) {
+    this.plugin = plugin;
+  }
+
+  /** Resets conversation state for a new refinement session. */
+  resetConversation(): void {
+    this.sessionId = null;
+  }
+
+  /** Refines a raw instruction from user input. */
+  async refineInstruction(
+    rawInstruction: string,
+    existingInstructions: string,
+    onProgress?: RefineProgressCallback
+  ): Promise<InstructionRefineResult> {
+    this.sessionId = null;
+    this.existingInstructions = existingInstructions;
+    const prompt = `Please refine this instruction: "${rawInstruction}"`;
+    return this.sendMessage(prompt, onProgress);
+  }
+
+  /** Continues conversation with a follow-up message (for clarifications). */
+  async continueConversation(
+    message: string,
+    onProgress?: RefineProgressCallback
+  ): Promise<InstructionRefineResult> {
+    if (!this.sessionId) {
+      return { success: false, error: 'No active conversation to continue' };
+    }
+    return this.sendMessage(message, onProgress);
+  }
+
+  /** Cancels any ongoing query. */
+  cancel(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+
+  private async sendMessage(
+    prompt: string,
+    onProgress?: RefineProgressCallback
+  ): Promise<InstructionRefineResult> {
+    const vaultPath = getVaultPath(this.plugin.app);
+    if (!vaultPath) {
+      return { success: false, error: 'Could not determine vault path' };
+    }
+
+    const resolvedClaudePath = this.plugin.getResolvedClaudeCliPath();
+    const customEnv = parseEnvironmentVariables(this.plugin.getActiveEnvironmentVariables());
+    this.abortController = new AbortController();
+
+    if (this.plugin.settings.agentProvider === 'codex') {
+      const resolvedCodexPath = this.plugin.getResolvedCodexCliPath();
+      if (!resolvedCodexPath) {
+        return { success: false, error: 'Codex CLI not found. Please install @openai/codex or configure Codex CLI path.' };
+      }
+      const enhancedPath = getEnhancedPath(customEnv.PATH, resolvedCodexPath);
+      const missingNodeError = getMissingNodeError(resolvedCodexPath, enhancedPath);
+      if (missingNodeError) {
+        return { success: false, error: missingNodeError.replace('Claude Code CLI', 'Codex CLI') };
+      }
+      try {
+        const codex = new Codex({
+          apiKey: customEnv.CODEX_API_KEY || customEnv.OPENAI_API_KEY || undefined,
+          baseUrl: customEnv.OPENAI_BASE_URL || undefined,
+          codexPathOverride: resolvedCodexPath,
+          env: {
+            ...process.env,
+            ...customEnv,
+            PATH: enhancedPath,
+          } as Record<string, string>,
+        });
+        const thread = this.sessionId
+          ? codex.resumeThread(this.sessionId, {
+            model: this.plugin.settings.model,
+            workingDirectory: vaultPath,
+            skipGitRepoCheck: true,
+            sandboxMode: 'read-only',
+            approvalPolicy: 'never',
+          })
+          : codex.startThread({
+            model: this.plugin.settings.model,
+            workingDirectory: vaultPath,
+            skipGitRepoCheck: true,
+            sandboxMode: 'read-only',
+            approvalPolicy: 'never',
+          });
+
+        const turn = await thread.run(
+          `${buildRefineSystemPrompt(this.existingInstructions)}\n\n${prompt}`,
+          { signal: this.abortController.signal }
+        );
+        this.sessionId = thread.id;
+        const result = this.parseResponse(turn.finalResponse);
+        onProgress?.(result);
+        return result;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Unknown error';
+        return { success: false, error: msg };
+      } finally {
+        this.abortController = null;
+      }
+    }
+
+    if (!resolvedClaudePath) {
+      return { success: false, error: 'Claude CLI not found. Please install Claude Code CLI.' };
+    }
+
+    const enhancedPath = getEnhancedPath(customEnv.PATH, resolvedClaudePath);
+    const missingNodeError = getMissingNodeError(resolvedClaudePath, enhancedPath);
+    if (missingNodeError) {
+      return { success: false, error: missingNodeError };
+    }
+
+    const options: Options = {
+      cwd: vaultPath,
+      systemPrompt: buildRefineSystemPrompt(this.existingInstructions),
+      model: this.plugin.settings.model,
+      abortController: this.abortController,
+      pathToClaudeCodeExecutable: resolvedClaudePath,
+      env: {
+        ...process.env,
+        ...customEnv,
+        PATH: enhancedPath,
+      },
+      tools: [], // No tools needed for instruction refinement
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      settingSources: this.plugin.settings.loadUserClaudeSettings
+        ? ['user', 'project']
+        : ['project'],
+    };
+
+    if (this.sessionId) {
+      options.resume = this.sessionId;
+    }
+
+    if (isAdaptiveThinkingModel(this.plugin.settings.model)) {
+      options.thinking = { type: 'adaptive' };
+      options.effort = this.plugin.settings.effortLevel;
+    } else {
+      const budgetConfig = THINKING_BUDGETS.find(b => b.value === this.plugin.settings.thinkingBudget);
+      if (budgetConfig && budgetConfig.tokens > 0) {
+        options.maxThinkingTokens = budgetConfig.tokens;
+      }
+    }
+
+    try {
+      const response = agentQuery({ prompt, options });
+      let responseText = '';
+
+      for await (const message of response) {
+        if (this.abortController?.signal.aborted) {
+          await response.interrupt();
+          return { success: false, error: 'Cancelled' };
+        }
+
+        if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
+          this.sessionId = message.session_id;
+        }
+
+        const text = this.extractTextFromMessage(message);
+        if (text) {
+          responseText += text;
+          // Stream progress updates
+          if (onProgress) {
+            const partialResult = this.parseResponse(responseText);
+            onProgress(partialResult);
+          }
+        }
+      }
+
+      return this.parseResponse(responseText);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: msg };
+    } finally {
+      this.abortController = null;
+    }
+  }
+
+  /** Parses response text for <instruction> tag. */
+  private parseResponse(responseText: string): InstructionRefineResult {
+    const instructionMatch = responseText.match(/<instruction>([\s\S]*?)<\/instruction>/);
+    if (instructionMatch) {
+      return { success: true, refinedInstruction: instructionMatch[1].trim() };
+    }
+
+    // No instruction tag - treat as clarification question
+    const trimmed = responseText.trim();
+    if (trimmed) {
+      return { success: true, clarification: trimmed };
+    }
+
+    return { success: false, error: 'Empty response' };
+  }
+
+  /** Extracts text content from SDK message. */
+  private extractTextFromMessage(message: { type: string; message?: { content?: Array<{ type: string; text?: string }> } }): string {
+    if (message.type !== 'assistant' || !message.message?.content) {
+      return '';
+    }
+
+    return message.message.content
+      .filter((block): block is { type: 'text'; text: string } => block.type === 'text' && !!block.text)
+      .map(block => block.text)
+      .join('');
+  }
+}
