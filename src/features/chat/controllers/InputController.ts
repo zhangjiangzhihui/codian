@@ -3,7 +3,7 @@ import { Notice } from 'obsidian';
 import type { AgentService, ApprovalCallbackOptions } from '../../../core/agent';
 import { detectBuiltInCommand } from '../../../core/commands';
 import { TOOL_EXIT_PLAN_MODE } from '../../../core/tools/toolNames';
-import type { ApprovalDecision, ChatMessage, ExitPlanModeDecision } from '../../../core/types';
+import type { ApprovalDecision, ChatMessage, ExitPlanModeDecision, ImageAttachment } from '../../../core/types';
 import type ClaudianPlugin from '../../../main';
 import { ResumeSessionDropdown } from '../../../shared/components/ResumeSessionDropdown';
 import { InstructionModal } from '../../../shared/modals/InstructionConfirmModal';
@@ -105,6 +105,7 @@ export class InputController {
     browserContextOverride?: BrowserSelectionContext | null;
     canvasContextOverride?: CanvasSelectionContext | null;
     content?: string;
+    imagesOverride?: ImageAttachment[];
   }): Promise<void> {
     const {
       plugin,
@@ -127,9 +128,10 @@ export class InputController {
     const externalContextSelector = this.deps.getExternalContextSelector();
 
     const contentOverride = options?.content;
+    const imagesOverride = options?.imagesOverride;
     const shouldUseInput = contentOverride === undefined;
     const content = (contentOverride ?? inputEl.value).trim();
-    const hasImages = imageContextManager?.hasImages() ?? false;
+    const hasImages = (imagesOverride?.length ?? 0) > 0 || (imageContextManager?.hasImages() ?? false);
     if (!content && !hasImages) return;
 
     // Clear completed/error/orphaned subagents from previous responses
@@ -148,7 +150,9 @@ export class InputController {
 
     // If agent is working, queue the message instead of dropping it
     if (state.isStreaming) {
-      const images = hasImages ? [...(imageContextManager?.getAttachedImages() || [])] : undefined;
+      const images = imagesOverride
+        ? [...imagesOverride]
+        : (hasImages ? [...(imageContextManager?.getAttachedImages() || [])] : undefined);
       const editorContext = selectionController.getContext();
       const browserContext = browserSelectionController?.getContext() ?? null;
       const canvasContext = canvasSelectionController.getContext();
@@ -204,11 +208,11 @@ export class InputController {
     const displayContent = content;
     let queryOptions: QueryOptions | undefined;
 
-    const images = imageContextManager?.getAttachedImages() || [];
+    const images = imagesOverride ? [...imagesOverride] : (imageContextManager?.getAttachedImages() || []);
     const imagesForMessage = images.length > 0 ? [...images] : undefined;
 
-    // Only clear images if we consumed user input (not for programmatic content override)
-    if (shouldUseInput) {
+    // Only clear images if we consumed the UI image state.
+    if (shouldUseInput && !imagesOverride) {
       imageContextManager?.clearImages();
     }
 

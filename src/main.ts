@@ -35,6 +35,7 @@ import {
 import { ClaudianView } from './features/chat/ClaudianView';
 import { type InlineEditContext, InlineEditModal } from './features/inline-edit/ui/InlineEditModal';
 import { ClaudianSettingTab } from './features/settings/ClaudianSettings';
+import { TelegramBridgeService } from './integrations/telegram/TelegramBridgeService';
 import { setLocale } from './i18n';
 import { ClaudeCliResolver } from './utils/claudeCli';
 import { CodexCliResolver } from './utils/codexCli';
@@ -61,6 +62,7 @@ export default class ClaudianPlugin extends Plugin {
   storage: StorageService;
   cliResolver: ClaudeCliResolver;
   codexCliResolver: CodexCliResolver;
+  telegramBridge: TelegramBridgeService | null = null;
   private conversations: Conversation[] = [];
   private runtimeEnvironmentVariables = '';
 
@@ -204,9 +206,14 @@ export default class ClaudianPlugin extends Plugin {
     });
 
     this.addSettingTab(new ClaudianSettingTab(this.app, this));
+
+    this.telegramBridge = new TelegramBridgeService(this);
+    await this.telegramBridge.sync();
   }
 
   async onunload() {
+    await this.telegramBridge?.stop();
+
     // Ensures state is saved even if Obsidian quits without calling onClose()
     for (const view of this.getAllViews()) {
       const tabManager = view.getTabManager();
@@ -442,6 +449,7 @@ export default class ClaudianPlugin extends Plugin {
     } = this.settings;
 
     await this.storage.saveClaudianSettings(settingsToSave);
+    await this.telegramBridge?.sync();
   }
 
   /** Updates and persists environment variables, restarting processes to apply changes. */

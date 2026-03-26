@@ -98,6 +98,7 @@ describe('types.ts', () => {
   describe('ClaudianSettings type', () => {
     it('should be assignable with valid settings', () => {
       const settings: ClaudianSettings = {
+        ...DEFAULT_SETTINGS,
         userName: '',
         enableBlocklist: false,
         allowExternalAccess: false,
@@ -143,6 +144,7 @@ describe('types.ts', () => {
 
     it('should accept custom model strings', () => {
       const settings: ClaudianSettings = {
+        ...DEFAULT_SETTINGS,
         userName: '',
         enableBlocklist: true,
         allowExternalAccess: false,
@@ -186,6 +188,7 @@ describe('types.ts', () => {
 
     it('should accept optional lastClaudeModel and lastCustomModel', () => {
       const settings: ClaudianSettings = {
+        ...DEFAULT_SETTINGS,
         userName: '',
         enableBlocklist: true,
         allowExternalAccess: false,

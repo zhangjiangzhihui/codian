@@ -71,6 +71,7 @@ export {
   type PlatformCliPaths,  // Kept for migration
   type SlashCommand,
   type TabBarPosition,
+  type TelegramSettings,
 } from './settings';
 
 // Re-export getHostnameKey from utils (moved from settings for architecture compliance)

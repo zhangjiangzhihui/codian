@@ -757,6 +757,135 @@ export class ClaudianSettingTab extends PluginSettingTab {
     bangBashValidationEl.style.marginBottom = '0.5em';
     bangBashValidationEl.style.display = 'none';
 
+    new Setting(containerEl).setName('Telegram Bridge').setHeading();
+
+    new Setting(containerEl)
+      .setName('Enable Telegram bridge')
+      .setDesc('Long-poll Telegram for remote prompts and reply with Codian execution results.')
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.telegram.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.telegram.enabled = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Telegram bot token')
+      .setDesc('Bot token from BotFather. The bridge only starts when this field is set and enabled.')
+      .addText((text) => {
+        text
+          .setPlaceholder('123456789:AA...')
+          .setValue(this.plugin.settings.telegram.botToken)
+          .onChange(async (value) => {
+            this.plugin.settings.telegram.botToken = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    new Setting(containerEl)
+      .setName('Allowed Telegram user IDs')
+      .setDesc('One numeric user ID per line. Leave empty to allow any user in allowed chats.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('123456789')
+          .setValue(this.plugin.settings.telegram.allowedUserIds.join('\n'))
+          .onChange(async (value) => {
+            this.plugin.settings.telegram.allowedUserIds = value
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.rows = 4;
+      });
+
+    new Setting(containerEl)
+      .setName('Allowed Telegram chat IDs')
+      .setDesc('One chat ID per line. Leave empty to allow any chat that passes the user filter.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('123456789\n-1001234567890')
+          .setValue(this.plugin.settings.telegram.allowedChatIds.join('\n'))
+          .onChange(async (value) => {
+            this.plugin.settings.telegram.allowedChatIds = value
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.rows = 4;
+      });
+
+    new Setting(containerEl)
+      .setName('Allow group chats')
+      .setDesc('Off by default. Keep this disabled unless you explicitly trust the group chat.')
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.telegram.allowGroupChats)
+          .onChange(async (value) => {
+            this.plugin.settings.telegram.allowGroupChats = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Telegram poll timeout')
+      .setDesc('Long-poll timeout in seconds. Higher values reduce request churn.')
+      .addSlider((slider) => {
+        slider
+          .setLimits(10, 60, 5)
+          .setValue(this.plugin.settings.telegram.pollTimeoutSeconds)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.telegram.pollTimeoutSeconds = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    const telegramStatusDesc = containerEl.createDiv({ cls: 'claudian-telegram-status' });
+    telegramStatusDesc.style.fontSize = '0.9em';
+    telegramStatusDesc.style.marginTop = '-0.25em';
+    telegramStatusDesc.style.marginBottom = '0.75em';
+    telegramStatusDesc.style.color = 'var(--text-muted)';
+    telegramStatusDesc.setText(`Status: ${this.plugin.telegramBridge?.getStatusSummary() ?? 'Unavailable'}`);
+
+    new Setting(containerEl)
+      .setName('Test Telegram connection')
+      .setDesc('Check whether the configured bot token can reach the Telegram Bot API.')
+      .addButton((button) => {
+        button
+          .setButtonText('Test')
+          .onClick(async () => {
+            button.setDisabled(true);
+            button.setButtonText('Testing...');
+            const message = await this.plugin.telegramBridge?.testConnection() ?? 'Telegram bridge is unavailable.';
+            telegramStatusDesc.setText(`Status: ${this.plugin.telegramBridge?.getStatusSummary() ?? message}`);
+            new Notice(message);
+            button.setDisabled(false);
+            button.setButtonText('Test');
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Reset Telegram bridge')
+      .setDesc('Force-stop the current polling loop and start a fresh one. Use this if Telegram messages stop being processed.')
+      .addButton((button) => {
+        button
+          .setButtonText('Reset')
+          .onClick(async () => {
+            button.setDisabled(true);
+            button.setButtonText('Resetting...');
+            await this.plugin.telegramBridge?.reset();
+            telegramStatusDesc.setText(`Status: ${this.plugin.telegramBridge?.getStatusSummary() ?? 'Unavailable'}`);
+            new Notice('Telegram bridge reset.');
+            button.setDisabled(false);
+            button.setButtonText('Reset');
+          });
+      });
+
     const maxTabsSetting = new Setting(containerEl)
       .setName(t('settings.maxTabs.name'))
       .setDesc(t('settings.maxTabs.desc'));

@@ -198,6 +198,17 @@ export interface EnvSnippet {
   contextLimits?: Record<string, number>;  // Optional: context limits for custom models
 }
 
+export interface TelegramSettings {
+  enabled: boolean;
+  botToken: string;
+  allowedUserIds: string[];
+  allowedChatIds: string[];
+  allowGroupChats: boolean;
+  pollTimeoutSeconds: number;
+  lastUpdateId: number;
+  chatConversationMap: Record<string, string>;
+}
+
 /** Source of a slash command. */
 export type SlashCommandSource = 'builtin' | 'user' | 'plugin' | 'sdk';
 
@@ -304,6 +315,9 @@ export interface ClaudianSettings {
 
   // Slash commands
   hiddenSlashCommands: string[];  // Command names to hide from dropdown (user preference)
+
+  // Telegram bridge
+  telegram: TelegramSettings;
 }
 
 /** Default Claudian-specific settings. */
@@ -374,6 +388,17 @@ export const DEFAULT_SETTINGS: ClaudianSettings = {
 
   // Slash commands
   hiddenSlashCommands: [],  // No commands hidden by default
+
+  telegram: {
+    enabled: false,
+    botToken: '',
+    allowedUserIds: [],
+    allowedChatIds: [],
+    allowGroupChats: false,
+    pollTimeoutSeconds: 30,
+    lastUpdateId: 0,
+    chatConversationMap: {},
+  },
 };
 
 /** Default CC-compatible settings. */
