@@ -1,5 +1,5 @@
 import { createAgentService } from '../../core/agent';
-import type { ImageAttachment, StreamChunk } from '../../core/types';
+import type { ChatMessage, ImageAttachment, StreamChunk } from '../../core/types';
 import type { TabData } from '../../features/chat/tabs/types';
 import type ClaudianPlugin from '../../main';
 
@@ -13,6 +13,12 @@ export interface RemoteExecutionResult {
   replyText: string;
 }
 
+interface BackgroundExecutionSummary {
+  replyText: string;
+  userMessage: ChatMessage;
+  assistantMessage: ChatMessage;
+}
+
 export class RemoteExecutionService {
   private activeExecutions = new Map<string, ActiveExecution>();
 
@@ -23,6 +29,7 @@ export class RemoteExecutionService {
     prompt: string,
     conversationId?: string,
     images?: ImageAttachment[],
+    displayContent?: string,
   ): Promise<RemoteExecutionResult> {
     const openTab = await this.resolveTargetTab(conversationId);
     if (openTab) {
@@ -58,17 +65,19 @@ export class RemoteExecutionService {
         chunks.push(chunk);
       }
 
-      const replyText = this.buildReplyText(chunks);
+      const summary = this.summarizeBackgroundExecution(prompt, displayContent ?? prompt, images, chunks);
       const nextSessionId = service.getSessionId();
       await this.plugin.updateConversation(conversation.id, {
+        messages: [...conversation.messages, summary.userMessage, summary.assistantMessage],
         sessionId: nextSessionId,
         sdkSessionId: nextSessionId ?? undefined,
+        sdkMessagesLoaded: true,
         lastResponseAt: Date.now(),
       });
 
       return {
         conversationId: conversation.id,
-        replyText,
+        replyText: summary.replyText,
       };
     } finally {
       this.activeExecutions.delete(chatKey);
@@ -200,5 +209,49 @@ export class RemoteExecutionService {
     }
 
     return 'Execution completed, but no text response was returned.';
+  }
+
+  private summarizeBackgroundExecution(
+    prompt: string,
+    displayContent: string,
+    images: ImageAttachment[] | undefined,
+    chunks: StreamChunk[],
+  ): BackgroundExecutionSummary {
+    const replyText = this.buildReplyText(chunks);
+    const timestamp = Date.now();
+    let userUuid: string | undefined;
+    let assistantUuid: string | undefined;
+
+    for (const chunk of chunks) {
+      if (chunk.type === 'sdk_user_uuid') {
+        userUuid = chunk.uuid;
+      } else if (chunk.type === 'sdk_assistant_uuid') {
+        assistantUuid = chunk.uuid;
+      }
+    }
+
+    const userMessage: ChatMessage = {
+      id: userUuid ?? `telegram-user-${timestamp}`,
+      role: 'user',
+      content: prompt,
+      displayContent,
+      timestamp,
+      images: images && images.length > 0 ? [...images] : undefined,
+      sdkUserUuid: userUuid,
+    };
+
+    const assistantMessage: ChatMessage = {
+      id: assistantUuid ?? `telegram-assistant-${timestamp + 1}`,
+      role: 'assistant',
+      content: replyText,
+      timestamp: timestamp + 1,
+      sdkAssistantUuid: assistantUuid,
+    };
+
+    return {
+      replyText,
+      userMessage,
+      assistantMessage,
+    };
   }
 }

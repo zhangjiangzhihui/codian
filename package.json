@@ -1,6 +1,6 @@
 {
   "name": "codian",
-  "version": "1.3.71",
+  "version": "1.3.72",
   "description": "Codian - Obsidian plugin with Claude Code and OpenAI Codex support",
   "main": "main.js",
   "scripts": {

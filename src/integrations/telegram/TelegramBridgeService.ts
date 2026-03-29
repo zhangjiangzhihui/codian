@@ -1,7 +1,9 @@
+import { requestUrl } from 'obsidian';
+
 import type ClaudianPlugin from '../../main';
 import type { ImageAttachment, ImageMediaType } from '../../core/types';
 import { RemoteExecutionService } from './RemoteExecutionService';
-import type { TelegramFileInfo, TelegramMessage, TelegramSendMessageResponse, TelegramUpdate } from './types';
+import type { TelegramDocument, TelegramFileInfo, TelegramMessage, TelegramSendMessageResponse, TelegramUpdate } from './types';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const RETRY_DELAY_MS = 3000;
@@ -104,14 +106,12 @@ export class TelegramBridgeService {
     while (!signal.aborted && this.shouldRun()) {
       try {
         const updates = await this.fetchUpdates(signal);
-        for (const update of updates) {
+        const batches = this.collectMessageBatches(updates);
+        for (const batch of batches) {
           if (signal.aborted) return;
           this.lastUpdateReceivedAt = Date.now();
-          await this.handleUpdate(update);
-          this.plugin.settings.telegram.lastUpdateId = Math.max(
-            this.plugin.settings.telegram.lastUpdateId,
-            update.update_id
-          );
+          await this.handleMessageBatch(batch);
+          this.plugin.settings.telegram.lastUpdateId = Math.max(this.plugin.settings.telegram.lastUpdateId, batch.lastUpdateId);
         }
         if (updates.length > 0) {
           await this.plugin.saveSettings();
@@ -227,21 +227,55 @@ export class TelegramBridgeService {
     return payload.result || [];
   }
 
-  private async handleUpdate(update: TelegramUpdate): Promise<void> {
-    const message = update.message;
+  private collectMessageBatches(updates: TelegramUpdate[]): Array<{ messages: TelegramMessage[]; lastUpdateId: number }> {
+    const batches: Array<{ messages: TelegramMessage[]; lastUpdateId: number }> = [];
+    const mediaGroupMap = new Map<string, { messages: TelegramMessage[]; lastUpdateId: number }>();
+
+    for (const update of updates) {
+      const message = update.message;
+      if (!message) {
+        batches.push({ messages: [], lastUpdateId: update.update_id });
+        continue;
+      }
+
+      const mediaGroupId = message.media_group_id;
+      if (!mediaGroupId) {
+        batches.push({ messages: [message], lastUpdateId: update.update_id });
+        continue;
+      }
+
+      const batchKey = `${message.chat.id}:${mediaGroupId}`;
+      const existing = mediaGroupMap.get(batchKey);
+      if (existing) {
+        existing.messages.push(message);
+        existing.lastUpdateId = Math.max(existing.lastUpdateId, update.update_id);
+        continue;
+      }
+
+      const created = { messages: [message], lastUpdateId: update.update_id };
+      mediaGroupMap.set(batchKey, created);
+      batches.push(created);
+    }
+
+    return batches;
+  }
+
+  private async handleMessageBatch(batch: { messages: TelegramMessage[]; lastUpdateId: number }): Promise<void> {
+    const [message] = batch.messages;
     if (!message) {
       this.lastSkipReason = 'update has no message payload';
       return;
     }
 
-    if (!this.isAuthorized(message)) {
+    if (batch.messages.some((entry) => !this.isAuthorized(entry))) {
       this.lastSkipReason = `message blocked by allowlist: chat=${message.chat.id} user=${message.from?.id ?? 'unknown'}`;
       await this.safeReply(message.chat.id, 'Unauthorized Telegram chat or user.');
       return;
     }
 
     const chatKey = String(message.chat.id);
-    const textContent = (message.text ?? message.caption ?? '').trim();
+    const textContent = this.extractBatchText(batch.messages);
+    const unsupportedHints = this.collectUnsupportedMediaHints(batch.messages);
 
     if (textContent === '/start' || textContent === '/help') {
       await this.safeReply(message.chat.id, 'Send a message to execute it in Codian. Use /new to start a fresh conversation or /stop to cancel the current run.');
@@ -264,12 +298,6 @@ export class TelegramBridgeService {
       return;
     }
 
-    const images = await this.extractTelegramImages(message);
-    if (!textContent && images.length === 0) {
-      this.lastSkipReason = 'message has no text, caption, or supported image';
-      return;
-    }
-
     if (this.activeChats.has(chatKey)) {
       const startedAt = this.activeChatStartedAt.get(chatKey) ?? Date.now();
       if (Date.now() - startedAt > TELEGRAM_EXECUTION_TIMEOUT_MS) {
@@ -286,13 +314,20 @@ export class TelegramBridgeService {
     this.activeChats.add(chatKey);
     this.activeChatStartedAt.set(chatKey, Date.now());
     try {
+      const images = await this.extractTelegramImagesFromBatch(batch.messages);
+      const promptText = this.buildExecutionPrompt(textContent, images.length, batch.messages, unsupportedHints);
+      if (!promptText && images.length === 0) {
+        this.lastSkipReason = 'message batch has no text, caption, supported image, or fallback media note';
+        return;
+      }
+
       this.lastMessageHandledAt = Date.now();
       this.lastSkipReason = null;
       await this.safeReply(message.chat.id, 'Request received. Running in Codian now.');
       const conversationId = this.plugin.settings.telegram.chatConversationMap[chatKey];
       const result = await this.runExecutionWithTimeout(
         chatKey,
-        this.remoteExecution.execute(chatKey, textContent, conversationId, images),
+        this.remoteExecution.execute(chatKey, promptText, conversationId, images, promptText),
       );
       this.plugin.settings.telegram.chatConversationMap[chatKey] = result.conversationId;
       await this.plugin.saveSettings();
@@ -405,9 +440,132 @@ export class TelegramBridgeService {
   }
 
   private async extractTelegramImages(message: TelegramMessage): Promise<ImageAttachment[]> {
+    const photoAttachment = this.selectPhotoAttachment(message);
+    if (photoAttachment) {
+      return [await this.downloadTelegramImage(message.message_id, photoAttachment)];
+    }
+
+    const documentAttachment = this.selectDocumentAttachment(message);
+    if (documentAttachment) {
+      return [await this.downloadTelegramImage(message.message_id, documentAttachment)];
+    }
+
+    return [];
+  }
+
+  private async extractTelegramImagesFromBatch(messages: TelegramMessage[]): Promise<ImageAttachment[]> {
+    const imageSets = await Promise.all(messages.map((message) => this.extractTelegramImages(message)));
+    return imageSets.flat();
+  }
+
+  private async fetchTelegramFile(fileId: string): Promise<TelegramFileInfo> {
+    try {
+      const response = await requestUrl({
+        url: this.buildApiUrl('getFile'),
+        method: 'POST',
+        contentType: 'application/json',
+        body: JSON.stringify({ file_id: fileId }),
+        throw: false,
+      });
+
+      if (response.status >= 400) {
+        throw new Error(`Telegram getFile failed: HTTP ${response.status}`);
+      }
+
+      const payload = response.json as {
+        ok: boolean;
+        result?: TelegramFileInfo;
+        description?: string;
+      };
+
+      if (!payload.ok || !payload.result) {
+        throw new Error(payload.description || 'Telegram getFile failed');
+      }
+
+      return payload.result;
+    } catch (error) {
+      throw new Error(`Telegram image step failed at getFile: ${this.normalizeNetworkError(error)}`);
+    }
+  }
+
+  private inferMediaType(filePath: string): ImageMediaType {
+    const normalized = filePath.toLowerCase();
+    if (normalized.endsWith('.png')) return 'image/png';
+    if (normalized.endsWith('.gif')) return 'image/gif';
+    if (normalized.endsWith('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+
+  private extractBatchText(messages: TelegramMessage[]): string {
+    for (const message of messages) {
+      const text = (message.text ?? message.caption ?? '').trim();
+      if (text) {
+        return text;
+      }
+    }
+    return '';
+  }
+
+  private collectUnsupportedMediaHints(messages: TelegramMessage[]): string[] {
+    const hints: string[] = [];
+
+    for (const message of messages) {
+      if (message.sticker) {
+        const stickerKind = message.sticker.is_video ? 'video sticker' : message.sticker.is_animated ? 'animated sticker' : 'sticker';
+        const emojiSuffix = message.sticker.emoji ? ` ${message.sticker.emoji}` : '';
+        hints.push(`Telegram ${stickerKind} received${emojiSuffix}.`);
+      }
+      if (message.animation) {
+        hints.push('Telegram animation received.');
+      }
+      if (message.video_note) {
+        hints.push('Telegram video note received.');
+      }
+    }
+
+    return [...new Set(hints)];
+  }
+
+  private buildExecutionPrompt(
+    textContent: string,
+    imageCount: number,
+    messages: TelegramMessage[],
+    unsupportedHints: string[],
+  ): string {
+    const parts: string[] = [];
+    const mediaGroupId = messages.find((message) => message.media_group_id)?.media_group_id;
+
+    if (mediaGroupId && imageCount > 1) {
+      parts.push(`Telegram album with ${imageCount} images.`);
+    }
+
+    if (unsupportedHints.length > 0) {
+      parts.push(...unsupportedHints);
+    }
+
+    if (textContent) {
+      parts.push(textContent);
+    }
+
+    if (parts.length === 0 && imageCount > 0) {
+      return mediaGroupId && imageCount > 1
+        ? `Telegram album with ${imageCount} images.`
+        : 'Telegram image received.';
+    }
+
+    return parts.join('\n\n').trim();
+  }
+
+  private selectPhotoAttachment(message: TelegramMessage): {
+    fileId: string;
+    fileUniqueId: string;
+    width?: number;
+    height?: number;
+    fallbackName: string;
+  } | null {
     const photos = message.photo;
     if (!photos || photos.length === 0) {
-      return [];
+      return null;
     }
 
     const largest = [...photos].sort((left, right) => {
@@ -417,69 +575,98 @@ export class TelegramBridgeService {
     })[0];
 
     if (!largest) {
-      return [];
+      return null;
     }
 
-    const file = await this.fetchTelegramFile(largest.file_id);
+    return {
+      fileId: largest.file_id,
+      fileUniqueId: largest.file_unique_id,
+      width: largest.width,
+      height: largest.height,
+      fallbackName: `telegram-${message.message_id}.jpg`,
+    };
+  }
+
+  private selectDocumentAttachment(message: TelegramMessage): {
+    fileId: string;
+    fileUniqueId: string;
+    width?: number;
+    height?: number;
+    fallbackName: string;
+  } | null {
+    const document = message.document;
+    if (!document || !this.isSupportedImageDocument(document)) {
+      return null;
+    }
+
+    return {
+      fileId: document.file_id,
+      fileUniqueId: document.file_unique_id,
+      width: document.width,
+      height: document.height,
+      fallbackName: document.file_name || `telegram-${message.message_id}.jpg`,
+    };
+  }
+
+  private isSupportedImageDocument(document: TelegramDocument): boolean {
+    const mimeType = document.mime_type?.toLowerCase();
+    if (mimeType === 'image/jpeg' || mimeType === 'image/png' || mimeType === 'image/gif' || mimeType === 'image/webp') {
+      return true;
+    }
+
+    const fileName = document.file_name?.toLowerCase() || '';
+    return fileName.endsWith('.jpg')
+      || fileName.endsWith('.jpeg')
+      || fileName.endsWith('.png')
+      || fileName.endsWith('.gif')
+      || fileName.endsWith('.webp');
+  }
+
+  private async downloadTelegramImage(
+    messageId: number,
+    attachment: {
+      fileId: string;
+      fileUniqueId: string;
+      width?: number;
+      height?: number;
+      fallbackName: string;
+    },
+  ): Promise<ImageAttachment> {
+    const file = await this.fetchTelegramFile(attachment.fileId);
     if (!file.file_path) {
       throw new Error('Telegram returned a file without a downloadable path.');
     }
 
     const mediaType = this.inferMediaType(file.file_path);
-    const response = await this.fetchWithTimeout(
-      `${TELEGRAM_API_BASE}/file/bot${this.plugin.settings.telegram.botToken.trim()}/${file.file_path}`,
-      { method: 'GET' },
-    );
+    const fileUrl = `${TELEGRAM_API_BASE}/file/bot${this.plugin.settings.telegram.botToken.trim()}/${file.file_path}`;
+    let buffer: Buffer;
 
-    if (!response.ok) {
-      throw new Error(`Telegram file download failed: HTTP ${response.status}`);
+    try {
+      const response = await requestUrl({
+        url: fileUrl,
+        method: 'GET',
+        throw: false,
+      });
+
+      if (response.status >= 400) {
+        throw new Error(`Telegram file download failed: HTTP ${response.status}`);
+      }
+
+      buffer = Buffer.from(response.arrayBuffer);
+    } catch (error) {
+      throw new Error(`Telegram image step failed at download file: ${this.normalizeNetworkError(error)}`);
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    return [{
-      id: `telegram-img-${message.message_id}-${largest.file_unique_id}`,
-      name: file.file_path.split('/').pop() || `telegram-${message.message_id}.jpg`,
+    return {
+      id: `telegram-img-${messageId}-${attachment.fileUniqueId}`,
+      name: file.file_path.split('/').pop() || attachment.fallbackName,
       mediaType,
       data: buffer.toString('base64'),
       size: buffer.length,
-      width: largest.width,
-      height: largest.height,
+      width: attachment.width,
+      height: attachment.height,
       source: 'file',
-    }];
-  }
-
-  private async fetchTelegramFile(fileId: string): Promise<TelegramFileInfo> {
-    const response = await this.fetchWithTimeout(this.buildApiUrl('getFile'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_id: fileId }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Telegram getFile failed: HTTP ${response.status}`);
-    }
-
-    const payload = await response.json() as {
-      ok: boolean;
-      result?: TelegramFileInfo;
-      description?: string;
     };
-
-    if (!payload.ok || !payload.result) {
-      throw new Error(payload.description || 'Telegram getFile failed');
-    }
-
-    return payload.result;
-  }
-
-  private inferMediaType(filePath: string): ImageMediaType {
-    const normalized = filePath.toLowerCase();
-    if (normalized.endsWith('.png')) return 'image/png';
-    if (normalized.endsWith('.gif')) return 'image/gif';
-    if (normalized.endsWith('.webp')) return 'image/webp';
-    return 'image/jpeg';
   }
 
   private async fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
