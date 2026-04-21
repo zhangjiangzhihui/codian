@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import type { App } from 'obsidian';
+import type { App , ButtonComponent} from 'obsidian';
 import { Notice, PluginSettingTab, Setting } from 'obsidian';
 
 import { getCurrentPlatformKey, getHostnameKey } from '../../core/types';
@@ -13,6 +13,7 @@ import {
 } from '../../core/types/models';
 import { getAvailableLocales, getLocaleDisplayName, setLocale, t } from '../../i18n';
 import type { Locale, TranslationKey } from '../../i18n/types';
+import type { WeChatQrLoginState } from '../../integrations/wechat/WeChatBridgeService';
 import type ClaudianPlugin from '../../main';
 import { findNodeExecutable, formatContextLimit, getCustomModelIds, getEnhancedPath, getModelsFromEnvironment, parseContextLimit, parseEnvironmentVariables } from '../../utils/env';
 import { expandHomePath } from '../../utils/path';
@@ -84,6 +85,7 @@ function addHotkeySettingRow(
 export class ClaudianSettingTab extends PluginSettingTab {
   plugin: ClaudianPlugin;
   private contextLimitsContainer: HTMLElement | null = null;
+  private wechatQrPollToken = 0;
 
   constructor(app: App, plugin: ClaudianPlugin) {
     super(app, plugin);
@@ -126,7 +128,13 @@ export class ClaudianSettingTab extends PluginSettingTab {
     return 'Your name for personalized greetings (leave empty for generic greetings)';
   }
 
+  hide(): void {
+    this.stopWeChatQrLoginPolling();
+    super.hide();
+  }
+
   display(): void {
+    this.stopWeChatQrLoginPolling();
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass('claudian-settings');
@@ -886,6 +894,206 @@ export class ClaudianSettingTab extends PluginSettingTab {
           });
       });
 
+    new Setting(containerEl).setName('WeChat ClawBot Bridge').setHeading();
+
+    new Setting(containerEl)
+      .setName('Enable WeChat bridge')
+      .setDesc('Long-poll the official WeChat ClawBot gateway for remote prompts and reply with Codian execution results. Current MVP supports text messages only.')
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.wechat.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.enabled = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('WeChat gateway base URL')
+      .setDesc('Official gateway default is https://ilinkai.weixin.qq.com. Change this only if your WeChat bridge runs against a different upstream.')
+      .addText((text) => {
+        text
+          .setPlaceholder('https://ilinkai.weixin.qq.com')
+          .setValue(this.plugin.settings.wechat.baseUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.baseUrl = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    new Setting(containerEl)
+      .setName('WeChat CDN base URL')
+      .setDesc('Official CDN default is https://novac2c.cdn.weixin.qq.com/c2c. This is used to download inbound WeChat images.')
+      .addText((text) => {
+        text
+          .setPlaceholder('https://novac2c.cdn.weixin.qq.com/c2c')
+          .setValue(this.plugin.settings.wechat.cdnBaseUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.cdnBaseUrl = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    new Setting(containerEl)
+      .setName('WeChat bot token')
+      .setDesc('Bot token issued by the official WeChat ClawBot / OpenClaw login flow.')
+      .addText((text) => {
+        text
+          .setPlaceholder('Paste imported WeChat bot token')
+          .setValue(this.plugin.settings.wechat.botToken)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.botToken = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    new Setting(containerEl)
+      .setName('WeChat account ID')
+      .setDesc('Optional. Used when importing one specific account from the local OpenClaw state directory.')
+      .addText((text) => {
+        text
+          .setPlaceholder('b0f5860fdecb-im-bot')
+          .setValue(this.plugin.settings.wechat.accountId)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.accountId = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    new Setting(containerEl)
+      .setName('WeChat route tag')
+      .setDesc('Optional advanced header. Imported automatically from OpenClaw when present.')
+      .addText((text) => {
+        text
+          .setPlaceholder('SKRouteTag')
+          .setValue(this.plugin.settings.wechat.routeTag)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.routeTag = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    new Setting(containerEl)
+      .setName('Allowed WeChat user IDs')
+      .setDesc('One user ID per line. Leave empty to allow any direct message that reaches the configured WeChat account.')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('wxid_xxx@im.wechat')
+          .setValue(this.plugin.settings.wechat.allowedUserIds.join('\n'))
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.allowedUserIds = value
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.rows = 4;
+      });
+
+    new Setting(containerEl)
+      .setName('WeChat poll timeout')
+      .setDesc('Long-poll timeout in seconds. The upstream may override this per response.')
+      .addSlider((slider) => {
+        slider
+          .setLimits(5, 60, 5)
+          .setValue(this.plugin.settings.wechat.pollTimeoutSeconds)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.pollTimeoutSeconds = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('OpenClaw state directory')
+      .setDesc('Leave empty to use the default local OpenClaw state directory. This is used only by the import button below.')
+      .addText((text) => {
+        const placeholder = this.plugin.wechatBridge?.getDefaultOpenClawStateDir() ?? '';
+        text
+          .setPlaceholder(placeholder)
+          .setValue(this.plugin.settings.wechat.openClawStateDir)
+          .onChange(async (value) => {
+            this.plugin.settings.wechat.openClawStateDir = value.trim();
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.style.width = '100%';
+      });
+
+    const wechatStatusDesc = containerEl.createDiv({ cls: 'claudian-wechat-status' });
+    wechatStatusDesc.style.fontSize = '0.9em';
+    wechatStatusDesc.style.marginTop = '-0.25em';
+    wechatStatusDesc.style.marginBottom = '0.75em';
+    wechatStatusDesc.style.color = 'var(--text-muted)';
+    wechatStatusDesc.setText(`Status: ${this.plugin.wechatBridge?.getStatusSummary() ?? 'Unavailable'}`);
+
+    this.renderWeChatQrLoginSection(containerEl, wechatStatusDesc);
+
+    new Setting(containerEl)
+      .setName('Import WeChat account from OpenClaw')
+      .setDesc('Read the bot token and base URL from a local OpenClaw WeChat login. If multiple accounts exist, fill in the account ID first.')
+      .addButton((button) => {
+        button
+          .setButtonText('Import')
+          .onClick(async () => {
+            button.setDisabled(true);
+            button.setButtonText('Importing...');
+            try {
+              const message = await this.plugin.wechatBridge?.importAccountFromOpenClaw(
+                this.plugin.settings.wechat.accountId,
+                this.plugin.settings.wechat.openClawStateDir,
+              ) ?? 'WeChat bridge is unavailable.';
+              wechatStatusDesc.setText(`Status: ${this.plugin.wechatBridge?.getStatusSummary() ?? message}`);
+              new Notice(message);
+              this.display();
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              new Notice(message);
+            } finally {
+              button.setDisabled(false);
+              button.setButtonText('Import');
+            }
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Test WeChat connection')
+      .setDesc('Check whether the configured WeChat gateway and bot token can be reached.')
+      .addButton((button) => {
+        button
+          .setButtonText('Test')
+          .onClick(async () => {
+            button.setDisabled(true);
+            button.setButtonText('Testing...');
+            const message = await this.plugin.wechatBridge?.testConnection() ?? 'WeChat bridge is unavailable.';
+            wechatStatusDesc.setText(`Status: ${this.plugin.wechatBridge?.getStatusSummary() ?? message}`);
+            new Notice(message);
+            button.setDisabled(false);
+            button.setButtonText('Test');
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Reset WeChat bridge')
+      .setDesc('Force-stop the current polling loop and clear the sync cursor. Use this if WeChat messages stop being processed.')
+      .addButton((button) => {
+        button
+          .setButtonText('Reset')
+          .onClick(async () => {
+            button.setDisabled(true);
+            button.setButtonText('Resetting...');
+            await this.plugin.wechatBridge?.reset();
+            wechatStatusDesc.setText(`Status: ${this.plugin.wechatBridge?.getStatusSummary() ?? 'Unavailable'}`);
+            new Notice('WeChat bridge reset.');
+            button.setDisabled(false);
+            button.setButtonText('Reset');
+          });
+      });
+
     const maxTabsSetting = new Setting(containerEl)
       .setName(t('settings.maxTabs.name'))
       .setDesc(t('settings.maxTabs.desc'));
@@ -1094,6 +1302,176 @@ export class ClaudianSettingTab extends PluginSettingTab {
     } catch {
       // Silently ignore restart failures - changes will apply on next conversation
     }
+  }
+
+  private renderWeChatQrLoginSection(containerEl: HTMLElement, wechatStatusDesc: HTMLElement): void {
+    const buttonState = {
+      busy: false,
+    };
+
+    let qrActionButton: ButtonComponent | null = null;
+
+    const defaultState = this.plugin.wechatBridge?.getQrLoginState() ?? {
+      active: false,
+      status: 'idle',
+      message: 'WeChat bridge is unavailable.',
+    };
+
+    const updateWeChatStatus = (): void => {
+      wechatStatusDesc.setText(`Status: ${this.plugin.wechatBridge?.getStatusSummary() ?? 'Unavailable'}`);
+    };
+
+    const updateQrButton = (state: WeChatQrLoginState): void => {
+      if (!qrActionButton) {
+        return;
+      }
+      qrActionButton.setDisabled(buttonState.busy);
+      if (buttonState.busy) {
+        qrActionButton.setButtonText(state.active ? 'Refreshing QR...' : 'Generating QR...');
+        return;
+      }
+      qrActionButton.setButtonText(state.active ? 'Regenerate QR' : 'Generate QR');
+    };
+
+    const renderQrState = (state: WeChatQrLoginState): void => {
+      qrStatusDesc.setText(`QR login: ${state.message}`);
+      if (state.qrCodeUrl) {
+        qrPanel.style.display = 'block';
+        qrImageEl.src = state.qrCodeUrl;
+        qrOpenLinkEl.href = state.qrCodeUrl;
+        qrHintEl.setText('Scan the QR code with WeChat and confirm the login on your phone. Codian keeps polling until the login is confirmed or the QR code expires.');
+      } else {
+        qrPanel.style.display = 'none';
+        qrImageEl.removeAttribute('src');
+        qrOpenLinkEl.href = '#';
+        qrHintEl.empty();
+      }
+      updateQrButton(state);
+    };
+
+    const handleQrPollFailure = (message: string): void => {
+      const failedState: WeChatQrLoginState = {
+        active: false,
+        status: 'failed',
+        message,
+      };
+      renderQrState(failedState);
+      updateWeChatStatus();
+      new Notice(message);
+    };
+
+    const beginQrPolling = (sessionKey: string): void => {
+      this.stopWeChatQrLoginPolling();
+      const pollToken = ++this.wechatQrPollToken;
+
+      const pollLoop = async (): Promise<void> => {
+        while (pollToken === this.wechatQrPollToken) {
+          const result = await this.plugin.wechatBridge?.pollQrLogin(sessionKey);
+          if (pollToken !== this.wechatQrPollToken || !result) {
+            return;
+          }
+
+          renderQrState(result);
+          updateWeChatStatus();
+
+          if (result.connected || !result.active || result.status === 'confirmed' || result.status === 'expired' || result.status === 'failed') {
+            if (result.status !== 'waiting' && result.status !== 'scanned') {
+              new Notice(result.message);
+            }
+            if (result.configUpdated) {
+              this.display();
+            }
+            return;
+          }
+
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
+        }
+      };
+
+      void pollLoop().catch((error) => {
+        if (pollToken !== this.wechatQrPollToken) {
+          return;
+        }
+        handleQrPollFailure(error instanceof Error ? error.message : String(error));
+      });
+    };
+
+    new Setting(containerEl)
+      .setName('Log in with WeChat QR')
+      .setDesc('Generate an official WeChat ClawBot QR code. On success, Codian saves the bot token, account ID, base URL, and enables the WeChat bridge automatically.')
+      .addButton((button) => {
+        qrActionButton = button;
+        updateQrButton(defaultState);
+        button.onClick(async () => {
+          buttonState.busy = true;
+          updateQrButton(this.plugin.wechatBridge?.getQrLoginState() ?? defaultState);
+          try {
+            const force = (this.plugin.wechatBridge?.getQrLoginState().active ?? false);
+            const nextState = await this.plugin.wechatBridge?.startQrLogin(force);
+            if (!nextState) {
+              handleQrPollFailure('WeChat bridge is unavailable.');
+              return;
+            }
+            renderQrState(nextState);
+            updateWeChatStatus();
+            if (nextState.active && nextState.sessionKey) {
+              beginQrPolling(nextState.sessionKey);
+            } else if (nextState.status === 'failed') {
+              new Notice(nextState.message);
+            }
+          } catch (error) {
+            handleQrPollFailure(error instanceof Error ? error.message : String(error));
+          } finally {
+            buttonState.busy = false;
+            updateQrButton(this.plugin.wechatBridge?.getQrLoginState() ?? defaultState);
+          }
+        });
+      });
+
+    const qrStatusDesc = containerEl.createDiv({ cls: 'claudian-wechat-qr-status' });
+    qrStatusDesc.style.fontSize = '0.9em';
+    qrStatusDesc.style.marginTop = '-0.25em';
+    qrStatusDesc.style.marginBottom = '0.5em';
+    qrStatusDesc.style.color = 'var(--text-muted)';
+
+    const qrPanel = containerEl.createDiv({ cls: 'claudian-wechat-qr-panel' });
+    qrPanel.style.display = 'none';
+    qrPanel.style.padding = '12px';
+    qrPanel.style.marginBottom = '0.75em';
+    qrPanel.style.border = '1px solid var(--background-modifier-border)';
+    qrPanel.style.borderRadius = '8px';
+    qrPanel.style.background = 'var(--background-secondary)';
+
+    const qrImageEl = qrPanel.createEl('img');
+    qrImageEl.style.display = 'block';
+    qrImageEl.style.width = '220px';
+    qrImageEl.style.maxWidth = '100%';
+    qrImageEl.style.height = '220px';
+    qrImageEl.style.objectFit = 'contain';
+    qrImageEl.style.marginBottom = '0.75em';
+    qrImageEl.alt = 'WeChat login QR code';
+
+    const qrOpenLinkEl = qrPanel.createEl('a', {
+      text: 'Open QR image in browser',
+      href: '#',
+    });
+    qrOpenLinkEl.target = '_blank';
+    qrOpenLinkEl.rel = 'noreferrer';
+    qrOpenLinkEl.style.display = 'inline-block';
+    qrOpenLinkEl.style.marginBottom = '0.5em';
+
+    const qrHintEl = qrPanel.createDiv({ cls: 'claudian-wechat-qr-hint' });
+    qrHintEl.style.fontSize = '0.9em';
+    qrHintEl.style.color = 'var(--text-muted)';
+
+    renderQrState(defaultState);
+    if (defaultState.active && defaultState.sessionKey) {
+      beginQrPolling(defaultState.sessionKey);
+    }
+  }
+
+  private stopWeChatQrLoginPolling(): void {
+    this.wechatQrPollToken += 1;
   }
 
 }

@@ -24,10 +24,9 @@ import type {
 import {
   DEFAULT_CLAUDE_MODELS,
   DEFAULT_CODEX_MODEL,
-  DEFAULT_CODEX_MODELS,
   DEFAULT_SETTINGS,
-  getCodexModelOptions,
   getCliPlatformKey,
+  getCodexModelOptions,
   getHostnameKey,
   normalizeVisibleModelVariant,
   VIEW_TYPE_CLAUDIAN,
@@ -35,8 +34,9 @@ import {
 import { ClaudianView } from './features/chat/ClaudianView';
 import { type InlineEditContext, InlineEditModal } from './features/inline-edit/ui/InlineEditModal';
 import { ClaudianSettingTab } from './features/settings/ClaudianSettings';
-import { TelegramBridgeService } from './integrations/telegram/TelegramBridgeService';
 import { setLocale } from './i18n';
+import { TelegramBridgeService } from './integrations/telegram/TelegramBridgeService';
+import { WeChatBridgeService } from './integrations/wechat/WeChatBridgeService';
 import { ClaudeCliResolver } from './utils/claudeCli';
 import { CodexCliResolver } from './utils/codexCli';
 import { buildCursorContext } from './utils/editor';
@@ -63,6 +63,7 @@ export default class ClaudianPlugin extends Plugin {
   cliResolver: ClaudeCliResolver;
   codexCliResolver: CodexCliResolver;
   telegramBridge: TelegramBridgeService | null = null;
+  wechatBridge: WeChatBridgeService | null = null;
   private conversations: Conversation[] = [];
   private runtimeEnvironmentVariables = '';
 
@@ -209,10 +210,13 @@ export default class ClaudianPlugin extends Plugin {
 
     this.telegramBridge = new TelegramBridgeService(this);
     await this.telegramBridge.sync();
+    this.wechatBridge = new WeChatBridgeService(this);
+    await this.wechatBridge.sync();
   }
 
   async onunload() {
     await this.telegramBridge?.stop();
+    await this.wechatBridge?.stop();
 
     // Ensures state is saved even if Obsidian quits without calling onClose()
     for (const view of this.getAllViews()) {
@@ -450,6 +454,7 @@ export default class ClaudianPlugin extends Plugin {
 
     await this.storage.saveClaudianSettings(settingsToSave);
     await this.telegramBridge?.sync();
+    await this.wechatBridge?.sync();
   }
 
   /** Updates and persists environment variables, restarting processes to apply changes. */

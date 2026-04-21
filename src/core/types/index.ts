@@ -42,11 +42,11 @@ export { type SDKMessage } from './sdk';
 
 // Settings types
 export {
+  type AgentProvider,
   type ApprovalDecision,
   type CCPermissions,
   type CCSettings,
   type ClaudianSettings,
-  type AgentProvider,
   type CliPlatformKey,
   createPermissionRule,
   DEFAULT_CC_PERMISSIONS,
@@ -72,6 +72,7 @@ export {
   type SlashCommand,
   type TabBarPosition,
   type TelegramSettings,
+  type WeChatSettings,
 } from './settings';
 
 // Re-export getHostnameKey from utils (moved from settings for architecture compliance)

@@ -209,6 +209,20 @@ export interface TelegramSettings {
   chatConversationMap: Record<string, string>;
 }
 
+export interface WeChatSettings {
+  enabled: boolean;
+  baseUrl: string;
+  cdnBaseUrl: string;
+  botToken: string;
+  accountId: string;
+  routeTag: string;
+  allowedUserIds: string[];
+  pollTimeoutSeconds: number;
+  syncCursor: string;
+  chatConversationMap: Record<string, string>;
+  openClawStateDir: string;
+}
+
 /** Source of a slash command. */
 export type SlashCommandSource = 'builtin' | 'user' | 'plugin' | 'sdk';
 
@@ -318,6 +332,7 @@ export interface ClaudianSettings {
 
   // Telegram bridge
   telegram: TelegramSettings;
+  wechat: WeChatSettings;
 }
 
 /** Default Claudian-specific settings. */
@@ -398,6 +413,19 @@ export const DEFAULT_SETTINGS: ClaudianSettings = {
     pollTimeoutSeconds: 30,
     lastUpdateId: 0,
     chatConversationMap: {},
+  },
+  wechat: {
+    enabled: false,
+    baseUrl: 'https://ilinkai.weixin.qq.com',
+    cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+    botToken: '',
+    accountId: '',
+    routeTag: '',
+    allowedUserIds: [],
+    pollTimeoutSeconds: 35,
+    syncCursor: '',
+    chatConversationMap: {},
+    openClawStateDir: '',
   },
 };
 

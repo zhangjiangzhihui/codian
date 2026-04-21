@@ -19,10 +19,26 @@ interface BackgroundExecutionSummary {
   assistantMessage: ChatMessage;
 }
 
+export interface RemoteExecutionConversationStore {
+  getConversationId(chatKey: string): string | undefined;
+  setConversationId(chatKey: string, conversationId: string): void;
+  messageIdPrefix?: string;
+}
+
 export class RemoteExecutionService {
   private activeExecutions = new Map<string, ActiveExecution>();
 
-  constructor(private plugin: ClaudianPlugin) {}
+  private conversationStore: RemoteExecutionConversationStore;
+
+  constructor(private plugin: ClaudianPlugin, conversationStore?: RemoteExecutionConversationStore) {
+    this.conversationStore = conversationStore ?? {
+      getConversationId: (chatKey) => this.plugin.settings.telegram.chatConversationMap[chatKey],
+      setConversationId: (chatKey, conversationId) => {
+        this.plugin.settings.telegram.chatConversationMap[chatKey] = conversationId;
+      },
+      messageIdPrefix: 'telegram',
+    };
+  }
 
   async execute(
     chatKey: string,
@@ -34,7 +50,7 @@ export class RemoteExecutionService {
     const openTab = await this.resolveTargetTab(conversationId);
     if (openTab) {
       const tabResult = await this.executeViaOpenTab(openTab, prompt, images);
-      this.plugin.settings.telegram.chatConversationMap[chatKey] = tabResult.conversationId;
+      this.conversationStore.setConversationId(chatKey, tabResult.conversationId);
       await this.plugin.saveSettings();
       return tabResult;
     }
@@ -101,14 +117,14 @@ export class RemoteExecutionService {
   }
 
   private async ensureConversation(chatKey: string, conversationId?: string) {
-    const existingId = conversationId ?? this.plugin.settings.telegram.chatConversationMap[chatKey];
+    const existingId = conversationId ?? this.conversationStore.getConversationId(chatKey);
     const existing = existingId ? await this.plugin.getConversationById(existingId) : null;
     if (existing) {
       return existing;
     }
 
     const created = await this.plugin.createConversation();
-    this.plugin.settings.telegram.chatConversationMap[chatKey] = created.id;
+    this.conversationStore.setConversationId(chatKey, created.id);
     await this.plugin.saveSettings();
     return created;
   }
@@ -219,6 +235,7 @@ export class RemoteExecutionService {
   ): BackgroundExecutionSummary {
     const replyText = this.buildReplyText(chunks);
     const timestamp = Date.now();
+    const messageIdPrefix = this.conversationStore.messageIdPrefix ?? 'remote';
     let userUuid: string | undefined;
     let assistantUuid: string | undefined;
 
@@ -231,7 +248,7 @@ export class RemoteExecutionService {
     }
 
     const userMessage: ChatMessage = {
-      id: userUuid ?? `telegram-user-${timestamp}`,
+      id: userUuid ?? `${messageIdPrefix}-user-${timestamp}`,
       role: 'user',
       content: prompt,
       displayContent,
@@ -241,7 +258,7 @@ export class RemoteExecutionService {
     };
 
     const assistantMessage: ChatMessage = {
-      id: assistantUuid ?? `telegram-assistant-${timestamp + 1}`,
+      id: assistantUuid ?? `${messageIdPrefix}-assistant-${timestamp + 1}`,
       role: 'assistant',
       content: replyText,
       timestamp: timestamp + 1,
