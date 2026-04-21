@@ -11,7 +11,7 @@ describe('WeChatBridgeService', () => {
   function createService() {
     const plugin = {
       manifest: {
-        version: '1.3.72',
+        version: '1.3.73',
       },
       settings: {
         wechat: {
